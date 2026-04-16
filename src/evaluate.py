@@ -1,19 +1,20 @@
 """
-Evaluation pipeline: compares BPMF vs SVD on the test set
-and specifically on cold-start users.
+Evaluation pipeline: compares BPMF vs SVD on the test set,
+with a separate breakdown for low-history vs high-history users.
 
 Usage:
-    python evaluate.py
+    python src/evaluate.py [--seed 42]
 
 Outputs:
     results/metrics_comparison.csv
     results/calibration.png
     results/uncertainty_vs_error.png
-    results/cold_start_comparison.png
+    results/low_history_comparison.png
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import pickle
 import sys
@@ -31,10 +32,12 @@ from metrics import (
     expected_calibration_error,
     rmse,
 )
+from utils import set_seed
 
-DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "processed", "data.pkl")
-CKPT_PATH = os.path.join(os.path.dirname(__file__), "..", "checkpoints", "bpmf_best.pt")
-RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
+DATA_PATH    = os.path.join(os.path.dirname(__file__), "..", "data", "processed", "data.pkl")
+CKPT_PATH    = os.path.join(os.path.dirname(__file__), "..", "checkpoints", "bpmf_best.pt")
+SVD_CKPT     = os.path.join(os.path.dirname(__file__), "..", "checkpoints", "svd_baseline.pt")
+RESULTS_DIR  = os.path.join(os.path.dirname(__file__), "..", "results")
 
 
 # ------------------------------------------------------------------
@@ -43,7 +46,7 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
 
 
 def load_bpmf(path: str, device: str = "cpu") -> BPMF:
-    ckpt = torch.load(path, map_location=device, weights_only=True)
+    ckpt  = torch.load(path, map_location=device, weights_only=True)
     model = BPMF(
         ckpt["n_users"],
         ckpt["n_items"],
@@ -53,6 +56,21 @@ def load_bpmf(path: str, device: str = "cpu") -> BPMF:
     model.load_state_dict(ckpt["model_state"])
     model.eval()
     return model.to(device)
+
+
+def load_or_train_svd(train_arr: np.ndarray, seed: int) -> SVDBaseline:
+    """Load cached SVD baseline if available, otherwise train and save."""
+    os.makedirs(os.path.dirname(SVD_CKPT), exist_ok=True)
+    if os.path.exists(SVD_CKPT):
+        print(f"Loading cached SVD baseline from {SVD_CKPT} ...")
+        return SVDBaseline.load(SVD_CKPT)
+
+    print("Training SVD baseline (this takes ~1-2 min)...")
+    svd = SVDBaseline(n_factors=20, n_epochs=20)
+    svd.fit(train_arr, seed=seed)
+    svd.save(SVD_CKPT)
+    print(f"  Saved to {SVD_CKPT}")
+    return svd
 
 
 def bpmf_predict(
@@ -73,7 +91,7 @@ def bpmf_predict(
         all_stds.append(variances.sqrt().cpu().numpy())
 
     y_mean = np.concatenate(all_means)
-    y_std = np.concatenate(all_stds)
+    y_std  = np.concatenate(all_stds)
     return y_mean.clip(1, 5), y_mean, y_std
 
 
@@ -95,7 +113,7 @@ def plot_calibration(
     save_path: str | None = None,
 ) -> float:
     ece, conf, emp = expected_calibration_error(y_true, y_mean, y_std)
-    fig, ax = plt.subplots(figsize=(6, 6))
+    _, ax = plt.subplots(figsize=(6, 6))
     ax.plot([0, 1], [0, 1], "k--", label="Perfect calibration")
     ax.plot(conf, emp, "b-o", label=f"BPMF (ECE = {ece:.4f})")
     ax.set_xlabel("Expected Coverage (confidence level)")
@@ -117,10 +135,10 @@ def plot_uncertainty_vs_error(
     save_path: str | None = None,
 ) -> None:
     """Show that higher predicted uncertainty → higher actual error."""
-    abs_error = np.abs(y_true - y_pred)
-    n_bins = 10
+    abs_error   = np.abs(y_true - y_pred)
+    n_bins      = 10
     percentiles = np.linspace(0, 100, n_bins + 1)
-    edges = np.percentile(y_std, percentiles)
+    edges       = np.percentile(y_std, percentiles)
 
     centers, errors = [], []
     for lo, hi in zip(edges[:-1], edges[1:]):
@@ -129,7 +147,7 @@ def plot_uncertainty_vs_error(
             centers.append(y_std[mask].mean())
             errors.append(abs_error[mask].mean())
 
-    fig, ax = plt.subplots(figsize=(8, 4))
+    _, ax = plt.subplots(figsize=(8, 4))
     ax.bar(range(len(centers)), errors, color="steelblue")
     ax.set_xticks(range(len(centers)))
     ax.set_xticklabels([f"{c:.2f}" for c in centers], rotation=45, ha="right")
@@ -143,7 +161,7 @@ def plot_uncertainty_vs_error(
     plt.close()
 
 
-def plot_cold_start_comparison(
+def plot_low_history_comparison(
     test_data: np.ndarray,
     bpmf_pred: np.ndarray,
     svd_pred: np.ndarray,
@@ -167,13 +185,13 @@ def plot_cold_start_comparison(
 
     x = np.arange(len(labels))
     w = 0.35
-    fig, ax = plt.subplots(figsize=(9, 5))
+    _, ax = plt.subplots(figsize=(9, 5))
     ax.bar(x - w / 2, bpmf_rmses, w, label="BPMF", color="steelblue")
-    ax.bar(x + w / 2, svd_rmses, w, label="SVD", color="tomato")
+    ax.bar(x + w / 2, svd_rmses,  w, label="SVD",  color="tomato")
     ax.set_xticks(x)
     ax.set_xticklabels([f"Train ratings\n{l}" for l in labels])
     ax.set_ylabel("RMSE")
-    ax.set_title("RMSE by Training-Set Size (Cold-Start Analysis)")
+    ax.set_title("RMSE by Training-Set Size (Low-History User Analysis)")
     ax.legend()
     ax.grid(axis="y", alpha=0.4)
     plt.tight_layout()
@@ -187,7 +205,8 @@ def plot_cold_start_comparison(
 # ------------------------------------------------------------------
 
 
-def main() -> None:
+def main(seed: int = 42) -> None:
+    set_seed(seed)
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     if not os.path.exists(DATA_PATH):
@@ -202,70 +221,78 @@ def main() -> None:
 
     print("Loading BPMF model...")
     bpmf = load_bpmf(CKPT_PATH, device)
+    svd  = load_or_train_svd(data["train"], seed=seed)
 
-    print("Training SVD baseline (this takes ~1-2 min)...")
-    svd = SVDBaseline(n_factors=20, n_epochs=20)
-    svd.fit(data["train"])
-
-    test_data = data["test"]
-    cold_test = data["cold_test"]
-    warm_test = data["warm_test"]
+    # Support both old (cold_test) and new (low_history_test) key names
+    test_data         = data["test"]
+    low_history_test  = data.get("low_history_test",  data.get("cold_test",  np.empty((0, 3), dtype=np.float32)))
+    high_history_test = data.get("high_history_test", data.get("warm_test",  np.empty((0, 3), dtype=np.float32)))
     user_train_counts = data["user_train_counts"]
 
     rows = []
 
+    # Pre-compute full-test predictions once to avoid redundant inference
+    bpmf_pred_full, bpmf_mean_full, bpmf_std_full = bpmf_predict(bpmf, test_data, device)
+    svd_pred_full = svd_predict(svd, test_data)
+
     for split_name, split_arr in [
-        ("Full Test", test_data),
-        ("Cold Start", cold_test),
-        ("Warm Users", warm_test),
+        ("Full Test",          test_data),
+        ("Low-History Users",  low_history_test),
+        ("High-History Users", high_history_test),
     ]:
         if len(split_arr) == 0:
             continue
         print(f"\n=== {split_name} ({len(split_arr)} ratings) ===")
 
-        bpmf_pred, bpmf_mean, bpmf_std = bpmf_predict(bpmf, split_arr, device)
-        svd_pred = svd_predict(svd, split_arr)
+        # Re-use full-test arrays for the full split; predict separately for sub-splits
+        if split_arr is test_data:
+            bp, bm, bs = bpmf_pred_full, bpmf_mean_full, bpmf_std_full
+            sp         = svd_pred_full
+        else:
+            bp, bm, bs = bpmf_predict(bpmf, split_arr, device)
+            sp         = svd_predict(svd, split_arr)
 
-        bm = compute_all_metrics(split_arr, bpmf_pred, bpmf_mean, bpmf_std)
-        sm = compute_all_metrics(split_arr, svd_pred)
+        bm_metrics = compute_all_metrics(split_arr, bp, bm, bs)
+        sm_metrics = compute_all_metrics(split_arr, sp)
 
-        print(f"  BPMF: {bm}")
-        print(f"  SVD:  {sm}")
+        print(f"  BPMF: {bm_metrics}")
+        print(f"  SVD:  {sm_metrics}")
 
-        for metric, val in bm.items():
+        for metric, val in bm_metrics.items():
             rows.append({"Split": split_name, "Model": "BPMF", "Metric": metric, "Value": round(val, 4)})
-        for metric, val in sm.items():
-            rows.append({"Split": split_name, "Model": "SVD", "Metric": metric, "Value": round(val, 4)})
+        for metric, val in sm_metrics.items():
+            rows.append({"Split": split_name, "Model": "SVD",  "Metric": metric, "Value": round(val, 4)})
 
     # Save metrics table
-    df = pd.DataFrame(rows)
+    df       = pd.DataFrame(rows)
     csv_path = os.path.join(RESULTS_DIR, "metrics_comparison.csv")
     df.to_csv(csv_path, index=False)
     print(f"\nMetrics saved → {csv_path}")
 
-    # Plots (on full test set)
-    bpmf_pred, bpmf_mean, bpmf_std = bpmf_predict(bpmf, test_data, device)
-    svd_pred = svd_predict(svd, test_data)
+    # Plots (on full test set — already computed above)
     y_true = test_data[:, 2]
 
     plot_calibration(
-        y_true, bpmf_mean, bpmf_std,
+        y_true, bpmf_mean_full, bpmf_std_full,
         save_path=os.path.join(RESULTS_DIR, "calibration.png"),
     )
     print("Saved calibration.png")
 
     plot_uncertainty_vs_error(
-        y_true, bpmf_pred, bpmf_std,
+        y_true, bpmf_pred_full, bpmf_std_full,
         save_path=os.path.join(RESULTS_DIR, "uncertainty_vs_error.png"),
     )
     print("Saved uncertainty_vs_error.png")
 
-    plot_cold_start_comparison(
-        test_data, bpmf_pred, svd_pred, user_train_counts,
-        save_path=os.path.join(RESULTS_DIR, "cold_start_comparison.png"),
+    plot_low_history_comparison(
+        test_data, bpmf_pred_full, svd_pred_full, user_train_counts,
+        save_path=os.path.join(RESULTS_DIR, "low_history_comparison.png"),
     )
-    print("Saved cold_start_comparison.png")
+    print("Saved low_history_comparison.png")
 
 
 if __name__ == "__main__":
-    main()
+    p = argparse.ArgumentParser(description="Evaluate BPMF vs SVD baseline")
+    p.add_argument("--seed", type=int, default=42)
+    args = p.parse_args()
+    main(seed=args.seed)

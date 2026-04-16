@@ -1,11 +1,10 @@
 """
 Evaluation metrics for the probabilistic recommender.
 
-  - RMSE  : root mean squared error
-  - MAE   : mean absolute error
-  - NDCG@K: normalised discounted cumulative gain at rank K
-  - ECE   : Expected Calibration Error for a Gaussian predictive distribution
-            (measures how well uncertainty estimates are calibrated)
+  - RMSE   : root mean squared error
+  - MAE    : mean absolute error
+  - NDCG@K : normalised discounted cumulative gain at rank K
+  - ECE    : Expected Calibration Error for a Gaussian predictive distribution
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ def ndcg_at_k(
     contribute zero gain.
 
     Args:
-        actual: {item_idx: true_rating}
+        actual:           {item_idx: true_rating}
         predicted_scores: {item_idx: predicted_score}
     """
     ranked = sorted(predicted_scores, key=lambda x: -predicted_scores[x])[:k]
@@ -56,14 +55,32 @@ def ndcg_at_k(
 def mean_ndcg_at_k(
     test_data: np.ndarray, y_pred: np.ndarray, k: int = 10
 ) -> float:
-    """Average NDCG@K over all users in test_data."""
+    """Average NDCG@K over all users in test_data.
+
+    WARNING — INFLATED VALUES
+    -------------------------
+    This implementation ranks only over the items present in each user's
+    test slice, not over the full item catalogue.  With a small test set
+    per user (typically 1-5 items after a temporal split) the ranking
+    problem is trivial and NDCG values are systematically inflated
+    (often 0.85-0.95 when true catalogue-level NDCG would be ~0.35-0.50).
+
+    TODO: replace with a candidate-set evaluation:
+      Option A — full catalogue ranking: for each user, score all n_items
+                 and check how high the test items land.
+      Option B — sampled negatives: pair each positive test item with
+                 k randomly sampled unrated items (e.g. k=99), rank
+                 within that set (standard in RecSys literature).
+    The current metric is valid for *relative* comparison between models
+    (BPMF vs SVD) but should not be reported as an absolute figure.
+    """
     actual_by_user: dict[int, dict] = {}
-    pred_by_user: dict[int, dict] = {}
+    pred_by_user:   dict[int, dict] = {}
 
     for (u, i, r), p in zip(test_data, y_pred):
         u, i = int(u), int(i)
         actual_by_user.setdefault(u, {})[i] = float(r)
-        pred_by_user.setdefault(u, {})[i] = float(p)
+        pred_by_user.setdefault(u, {})[i]   = float(p)
 
     scores = [ndcg_at_k(actual_by_user[u], pred_by_user[u], k) for u in actual_by_user]
     return float(np.mean(scores))
@@ -80,22 +97,35 @@ def expected_calibration_error(
     y_std: np.ndarray,
     n_bins: int = 10,
 ) -> tuple[float, np.ndarray, np.ndarray]:
-    """ECE for a Gaussian predictive distribution.
+    """Coverage-based ECE for a Gaussian predictive distribution.
 
-    For each confidence level alpha, checks what fraction of true values
-    actually fall within the alpha prediction interval. Perfect calibration
-    means empirical coverage == alpha.
+    This is an *interval-coverage* calibration check, not the standard
+    classification ECE.  For each confidence level α ∈ (0, 1) it checks
+    what fraction of true ratings actually fall inside the symmetric
+    α-prediction interval [ μ - z·σ,  μ + z·σ ] where z = Φ⁻¹(0.5 + α/2).
+    A perfectly calibrated model yields empirical_coverage ≈ α for all α.
+
+    ECE = mean_α |empirical_coverage(α) - α|
+
+    Args:
+        y_true: observed ratings        (N,)
+        y_mean: predictive means        (N,)
+        y_std:  predictive std devs     (N,)  — must be > 0
+        n_bins: number of confidence levels to evaluate
 
     Returns:
-        ece: scalar
-        conf_levels: (n_bins,) array
-        empirical_coverage: (n_bins,) array
+        ece:                scalar summary
+        conf_levels:        (n_bins,) array of α values
+        empirical_coverage: (n_bins,) array of observed coverage rates
     """
-    conf_levels = np.linspace(0.1, 0.99, n_bins)
+    # Guard against zero / negative std that would produce NaN intervals
+    y_std = np.maximum(y_std, 1e-8)
+
+    conf_levels        = np.linspace(0.1, 0.99, n_bins)
     empirical_coverage = np.zeros(n_bins)
 
     for idx, alpha in enumerate(conf_levels):
-        z = stats.norm.ppf(0.5 + alpha / 2.0)
+        z     = stats.norm.ppf(0.5 + alpha / 2.0)
         lower = y_mean - z * y_std
         upper = y_mean + z * y_std
         empirical_coverage[idx] = float(np.mean((y_true >= lower) & (y_true <= upper)))
@@ -121,17 +151,17 @@ def compute_all_metrics(
     Args:
         test_data: (N, 3) array [user_idx, item_idx, rating]
         y_pred:    (N,) clipped predictions
-        y_mean:    (N,) raw predictive means (for calibration)
-        y_std:     (N,) predictive standard deviations (for calibration)
+        y_mean:    (N,) raw predictive means (required for ECE)
+        y_std:     (N,) predictive standard deviations (required for ECE)
     """
     y_true = test_data[:, 2]
     out: dict[str, float] = {
-        "rmse": rmse(y_true, y_pred),
-        "mae": mae(y_true, y_pred),
-        f"ndcg@{k}": mean_ndcg_at_k(test_data, y_pred, k),
+        "rmse":         rmse(y_true, y_pred),
+        "mae":          mae(y_true, y_pred),
+        f"ndcg@{k}":   mean_ndcg_at_k(test_data, y_pred, k),
     }
     if y_mean is not None and y_std is not None:
         ece, _, _ = expected_calibration_error(y_true, y_mean, y_std)
-        out["ece"] = ece
+        out["ece"]              = ece
         out["mean_uncertainty"] = float(y_std.mean())
     return out

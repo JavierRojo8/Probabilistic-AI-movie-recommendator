@@ -7,7 +7,7 @@ maximally reduce the epistemic uncertainty.
 
 Strategy: Uncertainty Sampling
   Select items where the epistemic variance of the predicted rating
-  (Var_q[U_i . V_j]) is highest. Rating these items will inform the
+  (Var_q[U_i · V_j]) is highest. Rating these items will inform the
   posterior over U_i most efficiently.
 """
 
@@ -34,18 +34,29 @@ def get_active_learning_candidates(
         n_candidates:    how many items to suggest
 
     Returns:
-        candidate_item_ids: (n_candidates,) array of item indices
-        epistemic_vars:     (n_candidates,) corresponding variances
+        candidate_item_ids: (≤ n_candidates,) array of item indices.
+                            May be shorter if few unrated items remain.
+        epistemic_vars:     (≤ n_candidates,) corresponding variances.
     """
     with torch.no_grad():
         var = model.item_epistemic_variance(user_idx)   # (n_items,)
 
-    # Mask already-rated items
+    # Mask already-rated items — tensor must be on the same device as var
     if rated_item_ids:
-        rated = torch.tensor(list(rated_item_ids), dtype=torch.long)
+        rated = torch.tensor(
+            list(rated_item_ids), dtype=torch.long, device=var.device
+        )
         var[rated] = -1.0
 
-    top_idx = torch.argsort(var, descending=True)[:n_candidates]
+    # Keep only valid (unmasked) candidates before sorting
+    valid_idx = torch.where(var >= 0)[0]
+    if len(valid_idx) == 0:
+        # User has rated everything — return empty arrays
+        empty = np.array([], dtype=np.int64)
+        return empty, empty.astype(np.float32)
+
+    top_local = torch.argsort(var[valid_idx], descending=True)[:n_candidates]
+    top_idx = valid_idx[top_local]
     return top_idx.cpu().numpy(), var[top_idx].cpu().numpy()
 
 
@@ -54,5 +65,12 @@ def user_is_uncertain(
     user_idx: int,
     threshold: float = 1.2,
 ) -> bool:
-    """Return True if the user's mean predictive uncertainty is above threshold."""
-    return model.user_uncertainty(user_idx) > threshold
+    """Return True if the user's mean epistemic variance is above threshold.
+
+    Note: compares raw variance (not std) against threshold.
+    In the app, convert to std first if you want a std-based comparison.
+    """
+    uncertainty = model.user_uncertainty(user_idx)
+    # .item() ensures we return a plain Python bool regardless of whether
+    # user_uncertainty returns a tensor or a float
+    return bool((uncertainty.item() if hasattr(uncertainty, "item") else uncertainty) > threshold)
