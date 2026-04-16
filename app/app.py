@@ -39,7 +39,7 @@ def load_model_and_data():
     with open(DATA_PATH, "rb") as f:
         data = pickle.load(f)
 
-    ckpt = torch.load(CKPT_PATH, map_location="cpu")
+    ckpt = torch.load(CKPT_PATH, map_location="cpu", weights_only=True)
     model = BPMF(
         ckpt["n_users"],
         ckpt["n_items"],
@@ -124,12 +124,12 @@ def main() -> None:
     # ---- User stats ----
     rated_items = get_rated_items(train_arr, user_idx)
     n_rated = len(rated_items)
-    avg_unc = model.user_uncertainty(user_idx) ** 0.5   # approx std
+    avg_unc = model.user_uncertainty(user_idx)  # approx variance
 
     c1, c2, c3 = st.columns(3)
     c1.metric("User index", user_idx)
     c2.metric("Movies rated (train)", n_rated)
-    c3.metric("Mean uncertainty (std)", f"{avg_unc:.3f}")
+    c3.metric("Mean uncertainty (var)", f"{avg_unc:.3f}")
 
     st.divider()
 

@@ -85,7 +85,8 @@ def train(
             br = br.to(device)
 
             optimizer.zero_grad()
-            elbo = model.elbo(bu, bi, br, n_total)
+            kl_weight = min(1.0, epoch / 10.0)  # ramp from 0 → 1 over 10 epochs
+            elbo = model.elbo(bu, bi, br, n_total, kl_weight=kl_weight)
             (-elbo).backward()
             # Clip gradients to stabilise early training
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
@@ -133,7 +134,7 @@ def train(
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train BPMF")
     p.add_argument("--K", type=int, default=20, help="Latent factor dimension")
-    p.add_argument("--epochs", type=int, default=50)
+    p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--batch", type=int, default=4096)
     p.add_argument("--lr", type=float, default=0.01)
     p.add_argument("--device", type=str, default="auto")

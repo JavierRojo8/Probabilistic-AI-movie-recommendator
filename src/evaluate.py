@@ -43,7 +43,7 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
 
 
 def load_bpmf(path: str, device: str = "cpu") -> BPMF:
-    ckpt = torch.load(path, map_location=device)
+    ckpt = torch.load(path, map_location=device, weights_only=True)
     model = BPMF(
         ckpt["n_users"],
         ckpt["n_items"],

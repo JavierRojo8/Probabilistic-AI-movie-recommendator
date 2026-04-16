@@ -28,4 +28,5 @@ def download_movielens():
         with zipfile.ZipFile(zip_path, "r") as zip_ref:
             zip_ref.extractall(DATA_DIR)
 
-download_movielens()
+if __name__ == "__main__":
+    download_movielens()

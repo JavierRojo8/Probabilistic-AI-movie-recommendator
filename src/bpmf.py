@@ -138,6 +138,7 @@ class BPMF(nn.Module):
         item_ids: torch.Tensor,
         ratings: torch.Tensor,
         n_total: int,
+        kl_weight: float = 1.0,
     ) -> torch.Tensor:
         """Compute a stochastic ELBO estimate for a minibatch.
 
@@ -184,7 +185,7 @@ class BPMF(nn.Module):
         kl_bu = 0.5 * (self.sigma_bu**2 + self.m_bu**2 - 1.0 - 2.0 * self.rho_bu).sum()
         kl_bv = 0.5 * (self.sigma_bv**2 + self.m_bv**2 - 1.0 - 2.0 * self.rho_bv).sum()
 
-        return log_lik - kl_u - kl_v - kl_bu - kl_bv
+        return log_lik - kl_weight * (kl_u + kl_v + kl_bu + kl_bv)
 
     # ------------------------------------------------------------------
     # Recommendation helpers
