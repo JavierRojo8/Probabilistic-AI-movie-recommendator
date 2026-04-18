@@ -75,8 +75,8 @@ def train(
 
     model     = BPMF(n_users, n_items, K=K, global_mean=global_mean).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    # Decay LR by 0.5 every 20 epochs
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
+    # Decay LR by 0.5 every 10 epochs so the decay fires at least once in a default 20-epoch run
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
     # Validation tensors (kept on CPU)
     val_u = torch.tensor(val_arr[:, 0], dtype=torch.long)
@@ -86,6 +86,7 @@ def train(
     best_val_rmse  = float("inf")
     best_state     = None          # best weights kept in memory
     best_ckpt_path = os.path.join(CKPT_DIR, "bpmf_best.pt")
+    kl_anneal_epochs = 10          # don't save best until full ELBO is active
 
     print(f"Training BPMF  K={K}  epochs={n_epochs}  batch={batch_size}  lr={lr}  seed={seed}  device={device}")
     print(f"  n_users={n_users}  n_items={n_items}  n_train={n_total}")
@@ -133,7 +134,7 @@ def train(
             f"{val_rmse:>10.4f}  {model.sigma_obs.item():>10.4f}  {elapsed:>5.1f}s"
         )
 
-        if val_rmse < best_val_rmse:
+        if epoch >= kl_anneal_epochs and val_rmse < best_val_rmse:
             best_val_rmse = val_rmse
             # Keep best weights in memory (cheap deep-copy of state dict)
             best_state = copy.deepcopy(model.state_dict())

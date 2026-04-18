@@ -76,13 +76,22 @@ class SVDBaseline:
 
     # ------------------------------------------------------------------
 
-    def fit(self, train_array: np.ndarray, verbose: bool = True, seed: int = 42) -> "SVDBaseline":
+    def fit(
+        self,
+        train_array: np.ndarray,
+        verbose: bool = True,
+        seed: int = 42,
+        n_users: int | None = None,
+        n_items: int | None = None,
+    ) -> "SVDBaseline":
         """Train on (N, 3) float32 array of [user_idx, item_idx, rating].
 
         Args:
             train_array: ratings array shaped (N, 3)
             verbose:     print per-epoch train RMSE
             seed:        random seed for weight init and DataLoader shuffling
+            n_users:     global user count; if omitted, inferred from train max
+            n_items:     global item count; if omitted, inferred from train max
         """
         set_seed(seed)
         dev = self._device
@@ -91,10 +100,8 @@ class SVDBaseline:
         items   = torch.tensor(train_array[:, 1], dtype=torch.long)
         ratings = torch.tensor(train_array[:, 2], dtype=torch.float32)
 
-        n_users = int(users.max().item()) + 1
-        n_items = int(items.max().item()) + 1
-        self._n_users     = n_users
-        self._n_items     = n_items
+        self._n_users     = n_users if n_users is not None else int(users.max().item()) + 1
+        self._n_items     = n_items if n_items is not None else int(items.max().item()) + 1
         self._global_mean = float(ratings.mean().item())
 
         self._model = _BiasedMF(n_users, n_items, self.n_factors, self._global_mean).to(dev)
@@ -119,13 +126,13 @@ class SVDBaseline:
                 pred = self._model(u_batch, i_batch)
                 mse  = ((r_batch - pred) ** 2).mean()
 
-                # L2 regularisation — each term is the squared Frobenius norm
-                # of the embeddings for the current batch, normalised by batch size
-                reg_U  = self._model.U(u_batch).norm() ** 2
-                reg_V  = self._model.V(i_batch).norm() ** 2
-                reg_bu = self._model.bu(u_batch).norm() ** 2
-                reg_bv = self._model.bv(i_batch).norm() ** 2
-                reg_term = self.reg * (reg_U + reg_V + reg_bu + reg_bv) / len(r_batch)
+                # L2 regularisation — mean squared L2 norm per embedding row,
+                # so strength is independent of the factor dimension K
+                reg_U  = self._model.U(u_batch).pow(2).sum(1).mean()
+                reg_V  = self._model.V(i_batch).pow(2).sum(1).mean()
+                reg_bu = self._model.bu(u_batch).pow(2).mean()
+                reg_bv = self._model.bv(i_batch).pow(2).mean()
+                reg_term = self.reg * (reg_U + reg_V + reg_bu + reg_bv)
 
                 loss = mse + reg_term
                 loss.backward()

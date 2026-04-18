@@ -65,13 +65,13 @@ class NewUserState:
         return self.rho_bu.exp()
 
     @classmethod
-    def at_prior(cls, K: int) -> "NewUserState":
+    def at_prior(cls, K: int, device: torch.device | str = "cpu") -> "NewUserState":
         """Return a state initialised at the prior q = p = N(0, I)."""
         return cls(
-            mu_u=torch.zeros(K),
-            rho_u=torch.full((K,), -3.0),
-            m_bu=torch.tensor(0.0),
-            rho_bu=torch.tensor(-3.0),
+            mu_u=torch.zeros(K, device=device),
+            rho_u=torch.full((K,), -3.0, device=device),
+            m_bu=torch.tensor(0.0, device=device),
+            rho_bu=torch.tensor(-3.0, device=device),
         )
 
 
@@ -380,15 +380,16 @@ class BPMF(nn.Module):
             device = self.mu_u.device
             return torch.zeros(self.K, device=device), torch.tensor(0.0, device=device)
 
-        # Mean MSE per candidate; keep the n_neighbors with the lowest error
-        mse_per_user = {
-            u: float(np.mean(diffs)) for u, diffs in candidate_sq_diffs.items()
-        }
+        # Mean MSE per candidate + how many items they co-rated with the new user
+        mse_per_user   = {u: float(np.mean(diffs)) for u, diffs in candidate_sq_diffs.items()}
+        count_per_user = {u: len(diffs)             for u, diffs in candidate_sq_diffs.items()}
         top_users = sorted(mse_per_user, key=mse_per_user.__getitem__)[:n_neighbors]
 
-        # Similarity weights: w_k = 1 / (mse_k + ε), then normalised
-        mse_vals = np.array([mse_per_user[u] for u in top_users], dtype=np.float32)
-        weights  = 1.0 / (mse_vals + 1e-3)
+        # Similarity weights: (co-rating count) / (mse + ε), then normalised.
+        # Weighting by count rewards neighbors who share more items with the new user.
+        mse_vals   = np.array([mse_per_user[u]   for u in top_users], dtype=np.float32)
+        count_vals = np.array([count_per_user[u] for u in top_users], dtype=np.float32)
+        weights  = count_vals / (mse_vals + 1e-3)
         weights  = weights / weights.sum()
 
         device = self.mu_u.device
@@ -424,7 +425,7 @@ class BPMF(nn.Module):
             NewUserState with converged variational parameters.
         """
         if len(item_ids) == 0:
-            return NewUserState.at_prior(self.K)
+            return NewUserState.at_prior(self.K, device=self.mu_u.device)
 
         assert len(item_ids) == len(ratings), "item_ids and ratings must have equal length"
 
@@ -529,4 +530,4 @@ class BPMF(nn.Module):
             + mu_v  ** 2 * sigma_u ** 2
         ).sum(-1)  # (n_items,)
 
-        return var_factors.mean().sqrt().item()
+        return var_factors.sqrt().mean().item()

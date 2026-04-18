@@ -13,9 +13,13 @@ Strategy: Uncertainty Sampling
 
 from __future__ import annotations
 
+import os
+import sys
+
 import numpy as np
 import torch
 
+sys.path.insert(0, os.path.dirname(__file__))
 from bpmf import BPMF
 
 
@@ -48,29 +52,12 @@ def get_active_learning_candidates(
         )
         var[rated] = -1.0
 
-    # Keep only valid (unmasked) candidates before sorting
+    # Sort only over valid (unmasked) candidates
     valid_idx = torch.where(var >= 0)[0]
     if len(valid_idx) == 0:
-        # User has rated everything — return empty arrays
         empty = np.array([], dtype=np.int64)
         return empty, empty.astype(np.float32)
 
     top_local = torch.argsort(var[valid_idx], descending=True)[:n_candidates]
     top_idx = valid_idx[top_local]
     return top_idx.cpu().numpy(), var[top_idx].cpu().numpy()
-
-
-def user_is_uncertain(
-    model: BPMF,
-    user_idx: int,
-    threshold: float = 1.2,
-) -> bool:
-    """Return True if the user's mean epistemic variance is above threshold.
-
-    Note: compares raw variance (not std) against threshold.
-    In the app, convert to std first if you want a std-based comparison.
-    """
-    uncertainty = model.user_uncertainty(user_idx)
-    # .item() ensures we return a plain Python bool regardless of whether
-    # user_uncertainty returns a tensor or a float
-    return bool((uncertainty.item() if hasattr(uncertainty, "item") else uncertainty) > threshold)

@@ -13,17 +13,20 @@ import sys
 import numpy as np
 import streamlit as st
 import torch
+from scipy.stats import norm as _scipy_norm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 from active_learning import get_active_learning_candidates
+from baseline import SVDBaseline
 from bpmf import BPMF
 
 # ------------------------------------------------------------------
 # Constants
 # ------------------------------------------------------------------
 
-DATA_PATH = os.path.join(os.path.dirname(__file__), "../data/processed/data.pkl")
-CKPT_PATH = os.path.join(os.path.dirname(__file__), "../checkpoints/bpmf_best.pt")
+DATA_PATH    = os.path.join(os.path.dirname(__file__), "../data/processed/data.pkl")
+CKPT_PATH    = os.path.join(os.path.dirname(__file__), "../checkpoints/bpmf_best.pt")
+SVD_CKPT_PATH = os.path.join(os.path.dirname(__file__), "../checkpoints/svd_baseline.pt")
 
 UNCERTAINTY_THRESHOLD = 1.2
 
@@ -54,6 +57,13 @@ def load_model_and_data():
     return model, data
 
 
+@st.cache_resource(show_spinner="Loading SVD baseline…")
+def load_svd() -> SVDBaseline | None:
+    if not os.path.exists(SVD_CKPT_PATH):
+        return None
+    return SVDBaseline.load(SVD_CKPT_PATH)
+
+
 # ------------------------------------------------------------------
 # Shared helpers
 # ------------------------------------------------------------------
@@ -80,9 +90,9 @@ def render_rec_table(recs: dict, movies_df, sort_by: str, safe_picks_z: float = 
     """Render a recommendations dict as a Streamlit table.
 
     sort_by options:
-      "Predicted score"          — sort by mean (model default)
+      "Predicted score"                 — sort by mean (model default)
       "Confidence (most certain first)" — sort by mean - 1·std
-      "Best in range (safe picks)"     — sort by mean - z·std (z from credible interval %)
+      "Best in range (safe picks)"      — sort by mean - z·std (z from credible interval %)
     """
     ids   = recs["item_ids"].copy()
     means = recs["means"].copy()
@@ -96,8 +106,7 @@ def render_rec_table(recs: dict, movies_df, sort_by: str, safe_picks_z: float = 
         ids, means, stds = ids[order], means[order], stds[order]
 
     if sort_by == "Best in range (safe picks)":
-        from scipy.stats import norm as _norm
-        pct = int(round((_norm.cdf(safe_picks_z) - 0.5) * 200))
+        pct = int(round(float(_scipy_norm.cdf(safe_picks_z) - 0.5) * 200))
         caption_sort = (
             f"Sorted by **{pct}% credible lower bound** "
             f"(score − {safe_picks_z:.2f}·std). "
@@ -134,6 +143,23 @@ def render_rec_table(recs: dict, movies_df, sort_by: str, safe_picks_z: float = 
         cols[4].progress(conf, text=f"{conf:.0%}")
 
 
+def render_svd_table(svd: SVDBaseline, user_idx: int, rated_items: set[int],
+                     top_k: int, movies_df) -> None:
+    """Show SVD baseline recommendations for side-by-side comparison."""
+    recs = svd.recommend(user_idx, svd._n_items, rated_items=rated_items, top_k=top_k)
+    header = st.columns([0.4, 3, 2, 1.2])
+    for col, label in zip(header, ["#", "Title", "Genres", "Score ★"]):
+        col.markdown(f"**{label}**")
+    st.divider()
+    for rank, (item_idx, score) in enumerate(recs, start=1):
+        title, genres = lookup_movie(movies_df, item_idx)
+        cols = st.columns([0.4, 3, 2, 1.2])
+        cols[0].write(f"**{rank}**")
+        cols[1].write(title)
+        cols[2].write(genres)
+        cols[3].write(f"{score:.2f} ★")
+
+
 # ------------------------------------------------------------------
 # App
 # ------------------------------------------------------------------
@@ -159,11 +185,11 @@ def main() -> None:
         return
 
     model, data = load_model_and_data()
+    svd              = load_svd()
     movies_df        = data["movies"]
     train_arr        = data["train"]
     n_users          = data["n_users"]
-    # Support both old key name (cold_users) and new (low_history_users)
-    cold_users: list[int] = data.get("low_history_users", data.get("cold_users", []))
+    low_history_users: list[int] = data.get("low_history_users", data.get("cold_users", []))
 
     # ---- Shared sidebar ----
     st.sidebar.header("Settings")
@@ -196,8 +222,7 @@ def main() -> None:
                 "99% → subtract 2.58·std. Higher = safer but fewer adventurous picks."
             ),
         )
-        from scipy.stats import norm as _norm
-        safe_picks_z = float(_norm.ppf(0.5 + confidence_pct / 200.0))
+        safe_picks_z = float(_scipy_norm.ppf(0.5 + confidence_pct / 200.0))
 
     tab1, tab2 = st.tabs(["Existing User", "New User Demo"])
 
@@ -207,20 +232,20 @@ def main() -> None:
     with tab1:
         st.sidebar.markdown("---")
         st.sidebar.subheader("Existing User")
-        mode = st.sidebar.radio("User mode", ["Existing user", "Cold-start demo"])
+        mode = st.sidebar.radio("User mode", ["Existing user", "Low-history user demo"])
 
         if mode == "Existing user":
             user_idx = int(
                 st.sidebar.number_input("User index", 0, n_users - 1, 0, step=1)
             )
         else:
-            if cold_users:
+            if low_history_users:
                 user_idx = st.sidebar.selectbox(
-                    "Cold-start user (few training ratings)",
-                    options=cold_users[:50],
+                    "Low-history user (≤ 20 training ratings)",
+                    options=low_history_users[:50],
                 )
             else:
-                st.sidebar.info("No cold-start users found in current split.")
+                st.sidebar.info("No low-history users found in current split.")
                 user_idx = 0
 
         rated_items = get_rated_items(train_arr, user_idx)
@@ -255,9 +280,27 @@ def main() -> None:
                 col.info(f"**{title}**\n\n{genres}\n\n*(uncertainty: {var**0.5:.3f})*")
             st.divider()
 
-        st.subheader(f"Top-{top_k} Recommendations")
+        # BPMF recommendations
         recs = model.recommend(user_idx, rated_items=list(rated_items), top_k=top_k)
-        render_rec_table(recs, movies_df, sort_by, safe_picks_z)
+
+        if mode == "Low-history user demo" and svd is not None:
+            # Side-by-side comparison: BPMF vs SVD
+            st.subheader(f"Top-{top_k} Recommendations — BPMF vs SVD")
+            st.caption(
+                "Low-history users have ≤ 20 training ratings. "
+                "BPMF's Bayesian uncertainty estimate helps it personalise better than SVD "
+                "when data is scarce — compare the two lists below."
+            )
+            col_bpmf, col_svd = st.columns(2)
+            with col_bpmf:
+                st.markdown("#### BPMF (Bayesian)")
+                render_rec_table(recs, movies_df, sort_by, safe_picks_z)
+            with col_svd:
+                st.markdown("#### SVD Baseline")
+                render_svd_table(svd, user_idx, rated_items, top_k, movies_df)
+        else:
+            st.subheader(f"Top-{top_k} Recommendations")
+            render_rec_table(recs, movies_df, sort_by, safe_picks_z)
 
         with st.expander("About the model"):
             st.markdown(
@@ -272,8 +315,9 @@ def main() -> None:
                   wide posterior → low confidence → active-learning banner.
                 - **Active Learning**: when uncertainty is high the model suggests movies
                   that, if rated, would most reduce posterior variance (uncertainty sampling).
-                - Compared against a standard **SVD baseline**;
-                  BPMF shows its advantage on cold-start users.
+                - **Low-history user demo**: switch to this mode to see BPMF vs SVD
+                  side-by-side on users with few training ratings — where BPMF has the
+                  most advantage.
                 """
             )
 

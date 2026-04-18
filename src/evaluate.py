@@ -58,7 +58,7 @@ def load_bpmf(path: str, device: str = "cpu") -> BPMF:
     return model.to(device)
 
 
-def load_or_train_svd(train_arr: np.ndarray, seed: int) -> SVDBaseline:
+def load_or_train_svd(train_arr: np.ndarray, seed: int, n_users: int, n_items: int) -> SVDBaseline:
     """Load cached SVD baseline if available, otherwise train and save."""
     os.makedirs(os.path.dirname(SVD_CKPT), exist_ok=True)
     if os.path.exists(SVD_CKPT):
@@ -67,7 +67,7 @@ def load_or_train_svd(train_arr: np.ndarray, seed: int) -> SVDBaseline:
 
     print("Training SVD baseline (this takes ~1-2 min)...")
     svd = SVDBaseline(n_factors=20, n_epochs=20)
-    svd.fit(train_arr, seed=seed)
+    svd.fit(train_arr, seed=seed, n_users=n_users, n_items=n_items)
     svd.save(SVD_CKPT)
     print(f"  Saved to {SVD_CKPT}")
     return svd
@@ -221,13 +221,13 @@ def main(seed: int = 42) -> None:
 
     print("Loading BPMF model...")
     bpmf = load_bpmf(CKPT_PATH, device)
-    svd  = load_or_train_svd(data["train"], seed=seed)
+    svd  = load_or_train_svd(data["train"], seed=seed, n_users=data["n_users"], n_items=data["n_items"])
 
     # Support both old (cold_test) and new (low_history_test) key names
     test_data         = data["test"]
     low_history_test  = data.get("low_history_test",  data.get("cold_test",  np.empty((0, 3), dtype=np.float32)))
     high_history_test = data.get("high_history_test", data.get("warm_test",  np.empty((0, 3), dtype=np.float32)))
-    user_train_counts = data["user_train_counts"]
+    user_train_counts = data.get("user_train_counts", {})
 
     rows = []
 
