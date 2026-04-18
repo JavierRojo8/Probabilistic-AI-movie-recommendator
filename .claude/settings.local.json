@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import torch; print\\(hasattr\\(torch, 'pi'\\)\\)\")",
+      "Bash(python -c \"import torch; print\\(torch.__version__\\); print\\(hasattr\\(torch, 'pi'\\)\\); import sys; print\\(sys.version\\)\")",
+      "Bash(python -c ' *)"
+    ]
+  }
+}
