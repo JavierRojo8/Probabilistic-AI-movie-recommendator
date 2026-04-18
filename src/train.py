@@ -86,7 +86,10 @@ def train(
     best_val_rmse  = float("inf")
     best_state     = None          # best weights kept in memory
     best_ckpt_path = os.path.join(CKPT_DIR, "bpmf_best.pt")
-    kl_anneal_epochs = 10          # don't save best until full ELBO is active
+    # Only save checkpoints once KL is fully annealed.
+    # If n_epochs is shorter than the anneal window, start saving from epoch 1
+    # so we always end up with a checkpoint.
+    kl_anneal_epochs = min(10, n_epochs)
 
     print(f"Training BPMF  K={K}  epochs={n_epochs}  batch={batch_size}  lr={lr}  seed={seed}  device={device}")
     print(f"  n_users={n_users}  n_items={n_items}  n_train={n_total}")

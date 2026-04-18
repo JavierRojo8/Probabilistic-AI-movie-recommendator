@@ -104,7 +104,7 @@ class SVDBaseline:
         self._n_items     = n_items if n_items is not None else int(items.max().item()) + 1
         self._global_mean = float(ratings.mean().item())
 
-        self._model = _BiasedMF(n_users, n_items, self.n_factors, self._global_mean).to(dev)
+        self._model = _BiasedMF(self._n_users, self._n_items, self.n_factors, self._global_mean).to(dev)
         optimizer   = torch.optim.Adam(self._model.parameters(), lr=self.lr)
 
         loader = DataLoader(
