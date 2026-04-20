@@ -224,7 +224,7 @@ class BPMF(nn.Module):
 
     def fit_new_user(self, item_ids, ratings, n_steps=200, lr=0.05):
         if len(item_ids) == 0:
-            return NewUserState.at_prior(self.K, device=self.mu_u.device)
+            return NewUserState.at_prior(self.K, device=self.mu_u.device) # type: ignore
 
         assert len(item_ids) == len(ratings)
 

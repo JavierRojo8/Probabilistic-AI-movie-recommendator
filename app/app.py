@@ -5,13 +5,11 @@ Run:  streamlit run app/app.py
 """
 
 from __future__ import annotations
-
 import os
 import pickle
 import sys
-
 import numpy as np
-import streamlit as st
+import streamlit as st # type: ignore
 import torch
 from scipy.stats import norm as _scipy_norm
 
@@ -20,21 +18,11 @@ from active_learning import get_active_learning_candidates
 from baseline import SVDBaseline
 from bpmf import BPMF
 
-# ------------------------------------------------------------------
-# Constants
-# ------------------------------------------------------------------
-
 DATA_PATH    = os.path.join(os.path.dirname(__file__), "../data/processed/data.pkl")
 CKPT_PATH    = os.path.join(os.path.dirname(__file__), "../checkpoints/bpmf_best.pt")
 SVD_CKPT_PATH = os.path.join(os.path.dirname(__file__), "../checkpoints/svd_baseline.pt")
 
 UNCERTAINTY_THRESHOLD = 1.2
-
-
-# ------------------------------------------------------------------
-# Cached loading
-# ------------------------------------------------------------------
-
 
 @st.cache_resource(show_spinner="Loading model…")
 def load_model_and_data():
@@ -56,18 +44,11 @@ def load_model_and_data():
 
     return model, data
 
-
 @st.cache_resource(show_spinner="Loading SVD baseline…")
 def load_svd() -> SVDBaseline | None:
     if not os.path.exists(SVD_CKPT_PATH):
         return None
     return SVDBaseline.load(SVD_CKPT_PATH)
-
-
-# ------------------------------------------------------------------
-# Shared helpers
-# ------------------------------------------------------------------
-
 
 def get_rated_items(train_arr: np.ndarray, user_idx: int) -> set[int]:
     mask = train_arr[:, 0].astype(int) == user_idx
@@ -141,7 +122,6 @@ def render_rec_table(recs: dict, movies_df, sort_by: str, safe_picks_z: float = 
         cols[2].write(genres)
         cols[3].write(f"{mean_r:.2f} ★")
         cols[4].progress(conf, text=f"{conf:.0%}")
-
 
 def render_svd_table(svd: SVDBaseline, user_idx: int, rated_items: set[int],
                      top_k: int, movies_df) -> None:
@@ -451,7 +431,6 @@ def main() -> None:
             new_user, rated_items=rated_item_ids, top_k=top_k
         )
         render_rec_table(recs, movies_df, sort_by, safe_picks_z)
-
 
 if __name__ == "__main__":
     main()
