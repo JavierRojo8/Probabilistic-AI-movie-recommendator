@@ -15,7 +15,7 @@ Instead of predicting a single rating, the model predicts a **distribution** —
 |--------|-------------|--------------|
 | RMSE | **0.888** | 0.923 |
 | MAE | **0.695** | 0.715 |
-| ECE | **0.039** | — |
+| ECE | **0.0113** | — |
 | RMSE cold-start | **0.935** | 1.092 |
 
 Cold-start users (≤ 20 training ratings): **+14% RMSE improvement** over SVD.
