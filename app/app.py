@@ -185,59 +185,51 @@ def main() -> None:
         return
 
     model, data = load_model_and_data()
-    svd              = load_svd()
-    movies_df        = data["movies"]
-    train_arr        = data["train"]
-    n_users          = data["n_users"]
+    svd               = load_svd()
+    movies_df         = data["movies"]
+    train_arr         = data["train"]
+    n_users           = data["n_users"]
     low_history_users: list[int] = data.get("low_history_users", data.get("cold_users", []))
 
-    # ---- Shared sidebar ----
-    st.sidebar.header("Settings")
+    # ---- Top-level navigation in sidebar ----
+    st.sidebar.header("Navigation")
+    section = st.sidebar.radio(
+        "Mode",
+        ["👤  Existing User", "🆕  New User Demo"],
+        label_visibility="collapsed",
+    )
+    st.sidebar.divider()
+
+    # ---- Shared display settings ----
+    st.sidebar.header("Display settings")
     top_k = st.sidebar.slider("Recommendations to show", 5, 20, 10)
     sort_by = st.sidebar.radio(
-        "Sort recommendations by",
+        "Sort by",
         ["Predicted score", "Confidence (most certain first)", "Best in range (safe picks)"],
         help=(
             "**Predicted score**: highest expected rating first.\n\n"
-            "**Confidence**: ranks by score − 1·std (1-sigma lower bound). "
-            "Promotes items the model both likes *and* is sure about.\n\n"
-            "**Best in range**: ranks by the lower bound of a credible interval "
-            "(score − z·std). Higher confidence % = stricter penalty on uncertainty. "
-            "Surfaces movies the model is both enthusiastic *and* very sure about."
+            "**Confidence**: score − 1·std. Promotes items the model both likes *and* is sure about.\n\n"
+            "**Best in range**: lower bound of a credible interval (score − z·std)."
         ),
     )
-
-    safe_picks_z = 1.96  # default, overwritten below if option is selected
+    safe_picks_z = 1.96
     if sort_by == "Best in range (safe picks)":
         confidence_pct = st.sidebar.slider(
             "Credible interval confidence",
-            min_value=50,
-            max_value=99,
-            value=95,
-            step=1,
-            format="%d%%",
-            help=(
-                "Sets how conservatively uncertainty is penalised. "
-                "95% → subtract 1.96·std; 80% → subtract 1.28·std; "
-                "99% → subtract 2.58·std. Higher = safer but fewer adventurous picks."
-            ),
+            min_value=50, max_value=99, value=95, step=1, format="%d%%",
         )
         safe_picks_z = float(_scipy_norm.ppf(0.5 + confidence_pct / 200.0))
 
-    tab1, tab2 = st.tabs(["Existing User", "New User Demo"])
-
     # ==================================================================
-    # TAB 1 — Existing user
+    # SECTION 1 — Existing user
     # ==================================================================
-    with tab1:
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("Existing User")
+    if section == "👤  Existing User":
+        st.sidebar.divider()
+        st.sidebar.header("User selection")
         mode = st.sidebar.radio("User mode", ["Existing user", "Low-history user demo"])
 
         if mode == "Existing user":
-            user_idx = int(
-                st.sidebar.number_input("User index", 0, n_users - 1, 0, step=1)
-            )
+            user_idx = int(st.sidebar.number_input("User index", 0, n_users - 1, 0, step=1))
         else:
             if low_history_users:
                 user_idx = st.sidebar.selectbox(
@@ -248,9 +240,11 @@ def main() -> None:
                 st.sidebar.info("No low-history users found in current split.")
                 user_idx = 0
 
+        st.header("👤 Existing User")
+
         rated_items = get_rated_items(train_arr, user_idx)
         n_rated     = len(rated_items)
-        avg_unc     = model.user_uncertainty(user_idx) ** 0.5   # std
+        avg_unc     = model.user_uncertainty(user_idx) ** 0.5
 
         c1, c2, c3 = st.columns(3)
         c1.metric("User index", user_idx)
@@ -260,11 +254,35 @@ def main() -> None:
             f"{avg_unc:.3f}",
             help="Average predictive std across all items. Higher = model knows less about this user.",
         )
+
+        # Rated movies expander
+        with st.expander(f"Movies already rated by this user ({n_rated} total)", expanded=False):
+            if n_rated == 0:
+                st.write("No training ratings found for this user.")
+            else:
+                # Retrieve ratings from train_arr
+                user_mask = train_arr[:, 0].astype(int) == user_idx
+                user_rows = train_arr[user_mask]
+                # Sort by rating descending
+                user_rows = user_rows[np.argsort(-user_rows[:, 2])]
+                cols_header = st.columns([3, 2, 1])
+                cols_header[0].markdown("**Title**")
+                cols_header[1].markdown("**Genres**")
+                cols_header[2].markdown("**Rating**")
+                for row in user_rows:
+                    item_idx_r, rating_r = int(row[1]), float(row[2])
+                    title, genres = lookup_movie(movies_df, item_idx_r)
+                    stars = "★" * int(rating_r) + "☆" * (5 - int(rating_r))
+                    cols = st.columns([3, 2, 1])
+                    cols[0].write(title)
+                    cols[1].write(genres)
+                    cols[2].write(f"{stars} {rating_r:.0f}")
+
         st.divider()
 
         # Active learning banner
-        is_cold = n_rated <= 20 or avg_unc > UNCERTAINTY_THRESHOLD
-        if is_cold:
+        is_uncertain = n_rated <= 20 or avg_unc > UNCERTAINTY_THRESHOLD
+        if is_uncertain:
             st.warning(
                 "**High uncertainty detected.** "
                 "The model has limited data for this user. "
@@ -280,16 +298,14 @@ def main() -> None:
                 col.info(f"**{title}**\n\n{genres}\n\n*(uncertainty: {var**0.5:.3f})*")
             st.divider()
 
-        # BPMF recommendations
+        # Recommendations
         recs = model.recommend(user_idx, rated_items=list(rated_items), top_k=top_k)
 
         if mode == "Low-history user demo" and svd is not None:
-            # Side-by-side comparison: BPMF vs SVD
             st.subheader(f"Top-{top_k} Recommendations — BPMF vs SVD")
             st.caption(
                 "Low-history users have ≤ 20 training ratings. "
-                "BPMF's Bayesian uncertainty estimate helps it personalise better than SVD "
-                "when data is scarce — compare the two lists below."
+                "BPMF's uncertainty estimate helps it personalise better than SVD when data is scarce."
             )
             col_bpmf, col_svd = st.columns(2)
             with col_bpmf:
@@ -311,26 +327,23 @@ def main() -> None:
                   not point estimates — giving us uncertainty over recommendations.
                 - Training uses **Stochastic Variational Inference (SVI)** with minibatches,
                   which scales to the full MovieLens 1M dataset (~1 M ratings).
-                - The **confidence bar** reflects the model's epistemic uncertainty:
-                  wide posterior → low confidence → active-learning banner.
-                - **Active Learning**: when uncertainty is high the model suggests movies
-                  that, if rated, would most reduce posterior variance (uncertainty sampling).
-                - **Low-history user demo**: switch to this mode to see BPMF vs SVD
-                  side-by-side on users with few training ratings — where BPMF has the
-                  most advantage.
+                - The **confidence bar** reflects epistemic uncertainty: wide posterior → low confidence.
+                - **Active Learning**: when uncertainty is high, suggests movies that most reduce
+                  posterior variance (uncertainty sampling).
+                - **Low-history user demo**: see BPMF vs SVD side-by-side on users with few ratings.
                 """
             )
 
     # ==================================================================
-    # TAB 2 — New User Demo
+    # SECTION 2 — New User Demo
     # ==================================================================
-    with tab2:
+    else:
+        st.header("🆕 New User Demo")
         st.markdown(
             "Build a fresh profile by rating a few movies. "
             "Watch how recommendations and confidence evolve with each new rating."
         )
 
-        # Initialise session state
         if "demo_ratings" not in st.session_state:
             st.session_state.demo_ratings = {}
 
@@ -345,7 +358,6 @@ def main() -> None:
         if query:
             mask    = movies_df["title"].str.contains(query, case=False, na=False)
             matches = movies_df[mask].head(10)
-
             if len(matches) == 0:
                 st.info("No movies found — try a different title fragment.")
             else:
@@ -354,7 +366,6 @@ def main() -> None:
                     for _, r in matches.iterrows()
                 ]
                 indices = [int(r["item_idx"]) for _, r in matches.iterrows()]
-
                 sel_pos = st.selectbox(
                     "Select a movie",
                     range(len(labels)),
@@ -366,12 +377,10 @@ def main() -> None:
                 if sel_idx in st.session_state.demo_ratings:
                     st.info(
                         f"Already rated: {st.session_state.demo_ratings[sel_idx]:.1f} ★ "
-                        f"— submitting again will update the rating."
+                        "— submitting again will update the rating."
                     )
-
                 rating_val = st.slider(
-                    "Your rating",
-                    1.0, 5.0, 3.5, 0.5,
+                    "Your rating", 1.0, 5.0, 3.5, 0.5,
                     key="demo_rating",
                     help="1 = strongly disliked · 3 = neutral · 5 = loved",
                 )
@@ -379,11 +388,8 @@ def main() -> None:
                     st.session_state.demo_ratings[sel_idx] = rating_val
                     st.rerun()
 
-        # ---- Nothing rated yet ----
         if not st.session_state.demo_ratings:
-            st.info(
-                "Search for a movie above and add your first rating to see recommendations."
-            )
+            st.info("Search for a movie above and add your first rating to see recommendations.")
             return
 
         st.divider()
@@ -391,7 +397,6 @@ def main() -> None:
         rated_item_ids = list(st.session_state.demo_ratings.keys())
         rated_values   = [st.session_state.demo_ratings[i] for i in rated_item_ids]
 
-        # Fit variational posterior for this new user (~200 Adam steps, <1 s on CPU)
         with st.spinner("Updating model…"):
             new_user = model.fit_new_user(rated_item_ids, rated_values)
 
@@ -420,18 +425,18 @@ def main() -> None:
 
         st.divider()
 
-        # Active learning suggestions for the new user
+        # Active learning for new user
         all_items_t = torch.arange(model.n_items, dtype=torch.long)
         _, all_vars = model.predict_new_user(new_user, all_items_t)
         all_vars_np = all_vars.numpy().copy()
-        all_vars_np[rated_item_ids] = -1.0      # exclude already-rated
+        all_vars_np[rated_item_ids] = -1.0
 
         if avg_unc_new > UNCERTAINTY_THRESHOLD or len(rated_item_ids) <= 3:
             st.warning(
                 "**High uncertainty.** "
                 "Rating these movies will most reduce the model's uncertainty about you:"
             )
-            top_al = np.argsort(-all_vars_np)[:5]
+            top_al  = np.argsort(-all_vars_np)[:5]
             al_cols = st.columns(5)
             for col, al_idx in zip(al_cols, top_al):
                 title, genres = lookup_movie(movies_df, int(al_idx))
@@ -441,7 +446,6 @@ def main() -> None:
                 )
             st.divider()
 
-        # Recommendations
         st.subheader(f"Top-{top_k} Recommendations")
         recs = model.recommend_new_user(
             new_user, rated_items=rated_item_ids, top_k=top_k

@@ -1,0 +1,12 @@
+services:
+  recommender:
+    build: .
+    image: bpmf-recommender:latest
+    ports:
+      - "8501:8501"
+    # Mount checkpoints and processed data as volumes so you can swap the
+    # trained model without rebuilding the image
+    volumes:
+      - ./checkpoints:/app/checkpoints:ro
+      - ./data/processed:/app/data/processed:ro
+    restart: unless-stopped

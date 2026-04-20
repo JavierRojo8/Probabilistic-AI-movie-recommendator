@@ -1,0 +1,29 @@
+# Raw dataset — not needed for inference
+data/ml-1m/
+data/ml-1m.zip
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+src/__pycache__/
+app/__pycache__/
+
+# Git
+.git/
+.gitignore
+
+# Dev / IDE
+.vscode/
+*.env
+
+# LaTeX
+*.tex
+*.pdf
+*.aux
+*.log
+images/
+
+# Docs
+README.md
+report.txt
